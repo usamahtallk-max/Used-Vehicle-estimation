@@ -6,12 +6,16 @@ import joblib
 import pandas as pd
 
 
-app = FastAPI()
+app = FastAPI(
+    title="Used Vehicle Price Prediction API",
+    description="Car, Bike and Honda Activa price prediction API",
+    version="2.1"
+)
 
 
-# --------------------------------------------------
+# ============================================================
 # CORS
-# --------------------------------------------------
+# ============================================================
 
 app.add_middleware(
     CORSMiddleware,
@@ -22,228 +26,362 @@ app.add_middleware(
 )
 
 
-# --------------------------------------------------
-# Project paths
-# --------------------------------------------------
+# ============================================================
+# PATHS
+# ============================================================
 
 BASE_DIR = os.path.dirname(
-    os.path.dirname(
-        os.path.abspath(__file__)
+    os.path.dirname(os.path.abspath(__file__))
+)
+
+MODELS_DIR = os.path.join(BASE_DIR, "models")
+
+
+# ============================================================
+# LOAD CAR MODEL
+# ============================================================
+
+car_model = joblib.load(
+    os.path.join(
+        MODELS_DIR,
+        "random_forest_vehicle_price.pkl"
+    )
+)
+
+car_encoded_columns = joblib.load(
+    os.path.join(
+        MODELS_DIR,
+        "encoded_columns.pkl"
     )
 )
 
 
-# --------------------------------------------------
-# Load model
-# --------------------------------------------------
+# ============================================================
+# LOAD GENERAL BIKE MODEL
+# ============================================================
 
-model_path = os.path.join(
-    BASE_DIR,
-    "models",
-    "random_forest_vehicle_price.pkl"
+bike_model = joblib.load(
+    os.path.join(
+        MODELS_DIR,
+        "random_forest_bike_backup.pkl"
+    )
 )
 
-columns_path = os.path.join(
-    BASE_DIR,
-    "models",
-    "encoded_columns.pkl"
+# IMPORTANT:
+# This MUST be the 932-column encoder.
+bike_encoded_columns = joblib.load(
+    os.path.join(
+        MODELS_DIR,
+        "bike_encoded_columns_backup.pkl"
+    )
 )
 
 
-model = joblib.load(model_path)
-encoded_columns = joblib.load(columns_path)
+# ============================================================
+# LOAD HONDA ACTIVA MODEL
+# ============================================================
+
+activa_model = joblib.load(
+    os.path.join(
+        MODELS_DIR,
+        "random_forest_activa.pkl"
+    )
+)
+
+activa_encoded_columns = joblib.load(
+    os.path.join(
+        MODELS_DIR,
+        "activa_encoded_columns.pkl"
+    )
+)
 
 
-# Convert columns to list
-encoded_columns = list(encoded_columns)
+# ============================================================
+# VERIFY MODELS
+# ============================================================
+
+print("==========================================")
+print("MODEL VERIFICATION")
+print("==========================================")
+
+print(
+    "Car model features:",
+    car_model.n_features_in_
+)
+
+print(
+    "Car encoded columns:",
+    len(car_encoded_columns)
+)
+
+print(
+    "Bike model features:",
+    bike_model.n_features_in_
+)
+
+print(
+    "Bike encoded columns:",
+    len(bike_encoded_columns)
+)
+
+print(
+    "Activa model features:",
+    activa_model.n_features_in_
+)
+
+print(
+    "Activa encoded columns:",
+    len(activa_encoded_columns)
+)
+
+print("==========================================")
 
 
-# --------------------------------------------------
-# Basic API
-# --------------------------------------------------
+# ============================================================
+# HOME
+# ============================================================
 
 @app.get("/")
 def home():
 
     return {
-        "message": "Used Vehicle Price Prediction API is working!"
+        "message": "Used Vehicle Price Prediction API is working!",
+        "version": "2.1"
     }
 
+
+# ============================================================
+# MODEL STATUS
+# ============================================================
 
 @app.get("/model-status")
 def model_status():
 
     return {
-        "model": "Random Forest",
-        "status": "loaded successfully",
-        "features": len(encoded_columns)
+        "car_model": {
+            "status": "loaded",
+            "features": car_model.n_features_in_
+        },
+
+        "bike_model": {
+            "status": "loaded",
+            "features": bike_model.n_features_in_
+        },
+
+        "activa_model": {
+            "status": "loaded",
+            "features": activa_model.n_features_in_
+        }
     }
 
 
-# --------------------------------------------------
-# Request model
-# --------------------------------------------------
+# ============================================================
+# INPUT DATA
+# ============================================================
 
 class VehicleData(BaseModel):
 
     vehicle_type: str
+
     brand: str
+
     model_name: str
+
     year: int
+
     kms_driven: float
-    fuel_type: str
-    transmission: str
+
+    fuel_type: str = ""
+
+    transmission: str = ""
+
     owner: int
-    city: str
-    body_type: str
+
+    city: str = ""
+
+    body_type: str = ""
+
+    power: float = 150.0
 
 
-# --------------------------------------------------
-# Match category with training data
-# --------------------------------------------------
-
-def match_category(value, prefix):
-
-    """
-    Match the incoming value with the category spelling
-    used during model training.
-
-    Example:
-
-    incoming:
-        Honda
-
-    training:
-        honda
-
-    result:
-        honda
-    """
-
-    value = str(value).strip()
-
-    # Columns belonging to this category
-    possible_columns = [
-        col for col in encoded_columns
-        if col.startswith(prefix + "_")
-    ]
-
-    # Extract category names
-    categories = [
-        col[len(prefix) + 1:]
-        for col in possible_columns
-    ]
-
-    # Exact match
-    if value in categories:
-        return value
-
-    # Case-insensitive match
-    for category in categories:
-
-        if value.lower() == category.lower():
-
-            return category
-
-    # Return original value if not found
-    return value
-
-
-# --------------------------------------------------
-# Prediction
-# --------------------------------------------------
+# ============================================================
+# PREDICTION
+# ============================================================
 
 @app.post("/predict")
 def predict_price(vehicle: VehicleData):
 
-    # --------------------------------------------------
-    # Vehicle age
-    # --------------------------------------------------
+    vehicle_type = vehicle.vehicle_type.lower().strip()
 
-    current_year = 2026
+    brand = vehicle.brand.lower().strip()
 
-    vehicle_age = current_year - vehicle.year
+    model_name = vehicle.model_name.lower().strip()
 
 
-    # --------------------------------------------------
-    # Match categories with training dataset
-    # --------------------------------------------------
+    # ========================================================
+    # HONDA ACTIVA
+    # ========================================================
 
-    vehicle_type = match_category(
-        vehicle.vehicle_type,
-        "vehicle_type"
-    )
+    if (
+        vehicle_type == "bike"
+        and brand == "honda"
+        and "activa" in model_name
+    ):
 
-    brand = match_category(
-        vehicle.brand,
-        "brand"
-    )
+        vehicle_age = 2026 - vehicle.year
 
-    model_name = match_category(
-        vehicle.model_name,
-        "model"
-    )
+        owner_mapping = {
+            1: "1st owner",
+            2: "2nd owner",
+            3: "3rd owner",
+            4: "Fourth Owner Or More"
+        }
 
-    fuel_type = match_category(
-        vehicle.fuel_type,
-        "fuel_type"
-    )
+        owner_value = owner_mapping.get(
+            vehicle.owner,
+            "1st owner"
+        )
 
-    transmission = match_category(
-        vehicle.transmission,
-        "transmission"
-    )
-
-    city = match_category(
-        vehicle.city,
-        "city"
-    )
-
-    body_type = match_category(
-        vehicle.body_type,
-        "body_type"
-    )
+        input_data = pd.DataFrame([{
+            "bike_name": vehicle.model_name,
+            "kms_driven": vehicle.kms_driven,
+            "owner": owner_value,
+            "age": vehicle_age
+        }])
 
 
-    # --------------------------------------------------
-    # Create dataframe
-    # --------------------------------------------------
+        # Encode categorical features
+        input_encoded = pd.get_dummies(
+            input_data,
+            columns=[
+                "bike_name",
+                "owner"
+            ],
+            drop_first=True
+        )
+
+
+        # Match EXACTLY the 12 training columns
+        input_encoded = input_encoded.reindex(
+            columns=activa_encoded_columns,
+            fill_value=0
+        )
+
+
+        # Safety check
+        assert input_encoded.shape[1] == activa_model.n_features_in_
+
+
+        prediction = activa_model.predict(
+            input_encoded
+        )
+
+
+        estimated_price = max(
+            0,
+            float(prediction[0])
+        )
+
+
+        return {
+            "vehicle_category": "Honda Activa",
+            "model_used": "Activa Random Forest",
+            "estimated_price": round(
+                estimated_price,
+                2
+            )
+        }
+
+
+    # ========================================================
+    # GENERAL BIKE
+    # ========================================================
+
+    if vehicle_type == "bike":
+
+        vehicle_age = 2026 - vehicle.year
+
+        input_data = pd.DataFrame([{
+            "bike_name": vehicle.model_name,
+            "city": vehicle.city,
+            "kms_driven": vehicle.kms_driven,
+            "owner": vehicle.owner,
+            "age": vehicle_age,
+            "power": vehicle.power,
+            "brand": vehicle.brand
+        }])
+
+
+        # Encode the same categorical features
+        # used during the 932-feature model training.
+        input_encoded = pd.get_dummies(
+            input_data,
+            columns=[
+                "bike_name",
+                "city",
+                "owner",
+                "brand"
+            ],
+            drop_first=True
+        )
+
+
+        # Match EXACTLY the 932 training columns
+        input_encoded = input_encoded.reindex(
+            columns=bike_encoded_columns,
+            fill_value=0
+        )
+
+
+        # Safety check
+        assert input_encoded.shape[1] == bike_model.n_features_in_
+
+
+        prediction = bike_model.predict(
+            input_encoded
+        )
+
+
+        estimated_price = max(
+            0,
+            float(prediction[0])
+        )
+
+
+        return {
+            "vehicle_category": "Bike",
+            "model_used": "General Bike Random Forest",
+            "estimated_price": round(
+                estimated_price,
+                2
+            )
+        }
+
+
+    # ========================================================
+    # CAR
+    # ========================================================
+
+    vehicle_age = 2026 - vehicle.year
 
     input_data = pd.DataFrame([{
-
-        "vehicle_type": vehicle_type,
-
-        "brand": brand,
-
-        "model": model_name,
-
+        "vehicle_type": vehicle.vehicle_type,
+        "brand": vehicle.brand,
+        "model": vehicle.model_name,
         "year": vehicle.year,
-
         "kms_driven": vehicle.kms_driven,
-
-        "fuel_type": fuel_type,
-
-        "transmission": transmission,
-
+        "fuel_type": vehicle.fuel_type,
+        "transmission": vehicle.transmission,
+        "engine_cc": 0,
         "owner": vehicle.owner,
-
-        "city": city,
-
-        "body_type": body_type,
-
+        "city": vehicle.city,
+        "body_type": vehicle.body_type,
         "vehicle_age": vehicle_age
-
     }])
 
 
-    # --------------------------------------------------
-    # One-hot encoding
-    # --------------------------------------------------
-
     input_encoded = pd.get_dummies(
-
         input_data,
-
         columns=[
             "vehicle_type",
             "brand",
@@ -253,47 +391,35 @@ def predict_price(vehicle: VehicleData):
             "city",
             "body_type"
         ],
-
         drop_first=True
     )
 
 
-    # --------------------------------------------------
-    # Match training columns
-    # --------------------------------------------------
-
     input_encoded = input_encoded.reindex(
-
-        columns=encoded_columns,
-
+        columns=car_encoded_columns,
         fill_value=0
-
     )
 
 
-    # --------------------------------------------------
-    # Prediction
-    # --------------------------------------------------
+    assert input_encoded.shape[1] == car_model.n_features_in_
 
-    prediction = model.predict(
+
+    prediction = car_model.predict(
         input_encoded
     )
 
 
-    estimated_price = float(
-        prediction[0]
+    estimated_price = max(
+        0,
+        float(prediction[0])
     )
 
 
-    # --------------------------------------------------
-    # Response
-    # --------------------------------------------------
-
     return {
-
+        "vehicle_category": "Car",
+        "model_used": "Car Random Forest",
         "estimated_price": round(
             estimated_price,
             2
         )
-
     }
