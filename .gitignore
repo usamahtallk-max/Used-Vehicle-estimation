@@ -2,3 +2,7 @@ venv/
 __pycache__/
 *.pyc
 .env
+uploads/
+backend/main_backup.py
+notebooks/catboost_info/
+notebooks/models/
