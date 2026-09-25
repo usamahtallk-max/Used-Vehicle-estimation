@@ -1,38 +1,21 @@
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 from fastapi.openapi.utils import get_openapi
+from pydantic import BaseModel
+from fastapi.staticfiles import StaticFiles
+
+from pathlib import Path
+from PIL import Image
 
 import os
 import joblib
 import pandas as pd
 import shutil
 import uuid
+
 from typing import List
 
-
-# ============================================================
-# FASTAPI APP
-# ============================================================
-
-app = FastAPI(
-    title="Used Vehicle Price Prediction API",
-    description="Car, Bike and Honda Activa price prediction API with vehicle image upload",
-    version="5.0"
-)
-
-
-# ============================================================
-# CORS
-# ============================================================
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+from vision.damage_detector import detector
 
 
 # ============================================================
@@ -55,10 +38,47 @@ UPLOAD_DIR = os.path.join(
     "uploads"
 )
 
-# Create uploads folder automatically
 os.makedirs(
     UPLOAD_DIR,
     exist_ok=True
+)
+
+
+# ============================================================
+# FASTAPI APP
+# ============================================================
+
+app = FastAPI(
+    title="Used Vehicle Price Prediction API",
+    description=(
+        "Car, Bike and Honda Activa price prediction API "
+        "with vehicle image upload and AI damage detection"
+    ),
+    version="6.1"
+)
+
+
+# ============================================================
+# STATIC UPLOAD FILES
+# ============================================================
+
+app.mount(
+    "/uploads",
+    StaticFiles(directory=UPLOAD_DIR),
+    name="uploads"
+)
+
+
+# ============================================================
+# CORS
+# ============================================================
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -128,7 +148,7 @@ activa_encoded_columns = joblib.load(
 
 print()
 print("==========================================")
-print("USED VEHICLE AI - MODEL VERIFICATION")
+print("MOTORIQ - MODEL VERIFICATION")
 print("==========================================")
 
 print(
@@ -136,23 +156,16 @@ print(
     type(car_model).__name__
 )
 
-
-# CatBoost does not always expose n_features_in_
-# like scikit-learn RandomForest models.
 try:
-
     print(
         "Car model features:",
         car_model.get_feature_count()
     )
-
 except Exception:
-
     print(
         "Car model features:",
         "CatBoost feature count available internally"
     )
-
 
 print(
     "Bike model features:",
@@ -179,6 +192,23 @@ print(
     UPLOAD_DIR
 )
 
+print()
+print("AI DAMAGE DETECTOR:")
+print(
+    "Damage model:",
+    "YOLOv11 Car Damage Detection"
+)
+
+print(
+    "Damage classes:",
+    len(detector.model.names)
+)
+
+print(
+    "Available damage classes:",
+    detector.model.names
+)
+
 print("==========================================")
 print("All models loaded successfully")
 print("==========================================")
@@ -187,61 +217,21 @@ print()
 
 # ============================================================
 # CUSTOM OPENAPI
-#
-# This fixes Swagger UI showing:
-#
-#     Add string item
-#
-# instead of:
-#
-#     Choose Files
-#
-# FastAPI currently generates an OpenAPI 3.1 schema where
-# UploadFile may appear as:
-#
-#     type: string
-#     contentMediaType: application/octet-stream
-#
-# Swagger's file picker works correctly when the schema uses:
-#
-#     type: string
-#     format: binary
-#
 # ============================================================
 
 def custom_openapi():
 
-    # If schema has already been generated,
-    # return the existing schema.
     if app.openapi_schema:
-
         return app.openapi_schema
 
-
-    # Generate the normal FastAPI OpenAPI schema.
     openapi_schema = get_openapi(
-
         title=app.title,
-
         version=app.version,
-
         description=app.description,
-
         routes=app.routes
-
     )
 
-
-    # --------------------------------------------------------
-    # Force OpenAPI 3.0.3
-    # --------------------------------------------------------
-
     openapi_schema["openapi"] = "3.0.3"
-
-
-    # --------------------------------------------------------
-    # Locate the generated upload body schema
-    # --------------------------------------------------------
 
     try:
 
@@ -255,51 +245,32 @@ def custom_openapi():
             {}
         )
 
+        upload_schema_names = [
+            "Body_upload_vehicle_images_upload_vehicle_images_post",
+            "Body_analyze_vehicle_images_analyze_vehicle_images_post"
+        ]
 
-        upload_schema_name = (
-            "Body_upload_vehicle_images_upload_vehicle_images_post"
-        )
+        for upload_schema_name in upload_schema_names:
 
+            upload_schema = schemas.get(
+                upload_schema_name
+            )
 
-        upload_schema = schemas.get(
-            upload_schema_name
-        )
+            if upload_schema:
 
-
-        # ----------------------------------------------------
-        # Replace images definition
-        # ----------------------------------------------------
-
-        if upload_schema:
-
-            upload_schema["properties"]["images"] = {
-
-                "title": "Images",
-
-                "type": "array",
-
-                "items": {
-
-                    "type": "string",
-
-                    "format": "binary"
-
+                upload_schema["properties"]["images"] = {
+                    "title": "Images",
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "format": "binary"
+                    }
                 }
 
-            }
-
-
-            print(
-                "OpenAPI upload schema fixed successfully."
-            )
-
-
-        else:
-
-            print(
-                "Warning: upload schema was not found."
-            )
-
+                print(
+                    "OpenAPI upload schema fixed:",
+                    upload_schema_name
+                )
 
     except Exception as e:
 
@@ -308,15 +279,11 @@ def custom_openapi():
             e
         )
 
-
-    # Save modified schema
     app.openapi_schema = openapi_schema
-
 
     return app.openapi_schema
 
 
-# Tell FastAPI to use our custom OpenAPI schema.
 app.openapi = custom_openapi
 
 
@@ -328,16 +295,17 @@ app.openapi = custom_openapi
 def home():
 
     return {
-
         "message":
             "Used Vehicle Price Prediction API is working!",
 
         "version":
-            "5.0",
+            "6.1",
 
         "image_upload":
-            "enabled"
+            "enabled",
 
+        "ai_damage_detection":
+            "enabled"
     }
 
 
@@ -348,7 +316,6 @@ def home():
 @app.get("/model-status")
 def model_status():
 
-    # CatBoost feature count
     try:
 
         car_features = (
@@ -358,7 +325,6 @@ def model_status():
     except Exception:
 
         car_features = None
-
 
     return {
 
@@ -372,7 +338,6 @@ def model_status():
 
             "features":
                 car_features
-
         },
 
 
@@ -386,7 +351,6 @@ def model_status():
 
             "features":
                 bike_model.n_features_in_
-
         },
 
 
@@ -400,7 +364,6 @@ def model_status():
 
             "features":
                 activa_model.n_features_in_
-
         },
 
 
@@ -415,15 +378,30 @@ def model_status():
             "allowed_formats": [
 
                 "jpg",
-
                 "jpeg",
-
                 "png",
-
                 "webp"
 
             ]
+        },
 
+
+        "damage_detection": {
+
+            "status":
+                "enabled",
+
+            "model":
+                "YOLOv11 Car Damage Detection",
+
+            "classes":
+                detector.model.names,
+
+            "maximum_images":
+                6,
+
+            "confidence_threshold":
+                0.40
         }
 
     }
@@ -435,13 +413,268 @@ def model_status():
 
 @app.post("/upload-vehicle-images")
 async def upload_vehicle_images(
-
     images: List[UploadFile] = File(...)
-
 ):
 
     # ========================================================
     # CHECK IMAGE COUNT
+    # ========================================================
+
+    if not images:
+
+        return {
+
+            "success":
+                False,
+
+            "message":
+                "Please upload at least one vehicle image."
+        }
+
+
+    if len(images) > 6:
+
+        return {
+
+            "success":
+                False,
+
+            "message":
+                "Maximum 6 images are allowed."
+        }
+
+
+    # ========================================================
+    # ALLOWED IMAGE EXTENSIONS
+    # ========================================================
+
+    allowed_extensions = {
+
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".webp"
+
+    }
+
+
+    # ========================================================
+    # STORAGE ARRAYS
+    # ========================================================
+
+    saved_images = []
+
+    rejected_images = []
+
+
+    # ========================================================
+    # PROCESS EACH IMAGE
+    # ========================================================
+
+    for image in images:
+
+        if not image.filename:
+            continue
+
+
+        extension = os.path.splitext(
+            image.filename
+        )[1].lower()
+
+
+        if extension not in allowed_extensions:
+
+            rejected_images.append({
+
+                "original_name":
+                    image.filename,
+
+                "reason":
+                    "Unsupported image format"
+
+            })
+
+            continue
+
+
+        unique_name = (
+            str(uuid.uuid4())
+            + extension
+        )
+
+
+        file_path = os.path.join(
+            UPLOAD_DIR,
+            unique_name
+        )
+
+
+        try:
+
+            with open(
+                file_path,
+                "wb"
+            ) as buffer:
+
+                shutil.copyfileobj(
+                    image.file,
+                    buffer
+                )
+
+        except Exception as e:
+
+            rejected_images.append({
+
+                "original_name":
+                    image.filename,
+
+                "reason":
+                    f"Could not save image: {str(e)}"
+
+            })
+
+            continue
+
+
+        # ====================================================
+        # READ IMAGE DIMENSIONS
+        # ====================================================
+
+        try:
+
+            with Image.open(file_path) as img:
+
+                image_width, image_height = img.size
+
+        except Exception as e:
+
+            rejected_images.append({
+
+                "original_name":
+                    image.filename,
+
+                "reason":
+                    f"Could not read image dimensions: {str(e)}"
+
+            })
+
+            try:
+
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+
+            except Exception:
+                pass
+
+            continue
+
+
+        saved_images.append({
+
+            "filename":
+                unique_name,
+
+            "original_name":
+                image.filename,
+
+            "path":
+                file_path,
+
+            "image_width":
+                image_width,
+
+            "image_height":
+                image_height
+
+        })
+
+
+    # ========================================================
+    # NO VALID IMAGES
+    # ========================================================
+
+    if len(saved_images) == 0:
+
+        return {
+
+            "success":
+                False,
+
+            "message":
+                "No valid images were uploaded.",
+
+            "image_count":
+                0,
+
+            "images":
+                [],
+
+            "rejected_images":
+                rejected_images
+
+        }
+
+
+    # ========================================================
+    # SUCCESS
+    # ========================================================
+
+    return {
+
+        "success":
+            True,
+
+        "message":
+            (
+                f"{len(saved_images)} "
+                "image(s) uploaded successfully."
+            ),
+
+        "image_count":
+            len(saved_images),
+
+        "images":
+            saved_images,
+
+        "rejected_images":
+            rejected_images
+
+    }
+
+
+# ============================================================
+# AI VEHICLE DAMAGE ANALYSIS
+# ============================================================
+
+@app.post("/analyze-vehicle-images")
+async def analyze_vehicle_images(
+    images: List[UploadFile] = File(...)
+):
+
+    """
+    MotorIQ AI vehicle damage analysis.
+
+    Each uploaded image is analyzed independently.
+
+    Returned information includes:
+
+    - image filename
+    - original filename
+    - image width
+    - image height
+    - detected damage
+    - confidence
+    - confidence percentage
+    - confidence level
+    - bounding box
+
+    Only detections with confidence >= 40%
+    are returned as detected damage.
+    """
+
+
+    # ========================================================
+    # IMAGE COUNT
     # ========================================================
 
     if not images:
@@ -471,27 +704,31 @@ async def upload_vehicle_images(
 
 
     # ========================================================
-    # ALLOWED IMAGE EXTENSIONS
+    # ALLOWED FORMATS
     # ========================================================
 
     allowed_extensions = {
 
         ".jpg",
-
         ".jpeg",
-
         ".png",
-
         ".webp"
 
     }
 
 
     # ========================================================
-    # STORAGE ARRAYS
+    # DAMAGE CONFIDENCE THRESHOLD
     # ========================================================
 
-    saved_images = []
+    DAMAGE_CONFIDENCE_THRESHOLD = 0.40
+
+
+    # ========================================================
+    # STORAGE
+    # ========================================================
+
+    analyzed_images = []
 
     rejected_images = []
 
@@ -502,27 +739,18 @@ async def upload_vehicle_images(
 
     for image in images:
 
-        # ----------------------------------------------------
-        # Check filename
-        # ----------------------------------------------------
-
         if not image.filename:
-
             continue
 
-
-        # ----------------------------------------------------
-        # Get extension
-        # ----------------------------------------------------
 
         extension = os.path.splitext(
             image.filename
         )[1].lower()
 
 
-        # ----------------------------------------------------
-        # Check extension
-        # ----------------------------------------------------
+        # ====================================================
+        # VALIDATE EXTENSION
+        # ====================================================
 
         if extension not in allowed_extensions:
 
@@ -539,54 +767,37 @@ async def upload_vehicle_images(
             continue
 
 
-        # ----------------------------------------------------
-        # Generate unique filename
-        # ----------------------------------------------------
+        # ====================================================
+        # UNIQUE FILE
+        # ====================================================
 
         unique_name = (
-
             str(uuid.uuid4())
-
             + extension
-
         )
 
-
-        # ----------------------------------------------------
-        # Full file path
-        # ----------------------------------------------------
 
         file_path = os.path.join(
-
             UPLOAD_DIR,
-
             unique_name
-
         )
 
 
-        # ----------------------------------------------------
-        # Save uploaded file
-        # ----------------------------------------------------
+        # ====================================================
+        # SAVE FILE
+        # ====================================================
 
         try:
 
             with open(
-
                 file_path,
-
                 "wb"
-
             ) as buffer:
 
                 shutil.copyfileobj(
-
                     image.file,
-
                     buffer
-
                 )
-
 
         except Exception as e:
 
@@ -603,11 +814,160 @@ async def upload_vehicle_images(
             continue
 
 
-        # ----------------------------------------------------
-        # Add successful image
-        # ----------------------------------------------------
+        # ====================================================
+        # READ ACTUAL IMAGE DIMENSIONS
+        # ====================================================
 
-        saved_images.append({
+        try:
+
+            with Image.open(file_path) as img:
+
+                image_width, image_height = img.size
+
+        except Exception as e:
+
+            rejected_images.append({
+
+                "original_name":
+                    image.filename,
+
+                "reason":
+                    f"Could not read image dimensions: {str(e)}"
+
+            })
+
+            try:
+
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+
+            except Exception:
+                pass
+
+            continue
+
+
+        # ====================================================
+        # YOLO DAMAGE DETECTION
+        # ====================================================
+
+        try:
+
+            raw_detections = detector.analyze(
+
+                file_path,
+
+                confidence=
+                    DAMAGE_CONFIDENCE_THRESHOLD
+
+            )
+
+        except Exception as e:
+
+            rejected_images.append({
+
+                "original_name":
+                    image.filename,
+
+                "reason":
+                    f"AI analysis failed: {str(e)}"
+
+            })
+
+            try:
+
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+
+            except Exception:
+                pass
+
+            continue
+
+
+        # ====================================================
+        # CLEAN DETECTIONS
+        # ====================================================
+
+        detections = []
+
+
+        for detection in raw_detections:
+
+            confidence = float(
+                detection.get(
+                    "confidence",
+                    0
+                )
+            )
+
+
+            # ------------------------------------------------
+            # EXTRA CONFIDENCE SAFETY
+            # ------------------------------------------------
+
+            if confidence < DAMAGE_CONFIDENCE_THRESHOLD:
+                continue
+
+
+            # ------------------------------------------------
+            # CONFIDENCE LEVEL
+            # ------------------------------------------------
+
+            if confidence >= 0.60:
+
+                confidence_level = "high"
+
+            else:
+
+                confidence_level = "moderate"
+
+
+            # ------------------------------------------------
+            # CLEAN RESULT
+            # ------------------------------------------------
+
+            detections.append({
+
+                "class_id":
+                    detection.get(
+                        "class_id"
+                    ),
+
+                "damage":
+                    detection.get(
+                        "damage"
+                    ),
+
+                "confidence":
+                    round(
+                        confidence,
+                        4
+                    ),
+
+                "confidence_percent":
+                    round(
+                        confidence * 100,
+                        2
+                    ),
+
+                "confidence_level":
+                    confidence_level,
+
+                "bbox":
+                    detection.get(
+                        "bbox",
+                        {}
+                    )
+
+            })
+
+
+        # ====================================================
+        # IMAGE RESULT
+        # ====================================================
+
+        analyzed_images.append({
 
             "filename":
                 unique_name,
@@ -616,16 +976,31 @@ async def upload_vehicle_images(
                 image.filename,
 
             "path":
-                file_path
+                file_path,
+
+            "image_width":
+                image_width,
+
+            "image_height":
+                image_height,
+
+            "detections":
+                detections,
+
+            "damage_detected":
+                len(detections) > 0,
+
+            "damage_count":
+                len(detections)
 
         })
 
 
     # ========================================================
-    # CHECK IF ANY IMAGE WAS SUCCESSFULLY SAVED
+    # NO IMAGES ANALYZED
     # ========================================================
 
-    if len(saved_images) == 0:
+    if len(analyzed_images) == 0:
 
         return {
 
@@ -633,7 +1008,7 @@ async def upload_vehicle_images(
                 False,
 
             "message":
-                "No valid images were uploaded.",
+                "No valid images could be analyzed.",
 
             "image_count":
                 0,
@@ -641,14 +1016,77 @@ async def upload_vehicle_images(
             "images":
                 [],
 
+            "detections":
+                [],
+
+            "damage_detected":
+                False,
+
+            "damage_count":
+                0,
+
             "rejected_images":
-                rejected_images
+                rejected_images,
+
+            "confidence_threshold":
+                DAMAGE_CONFIDENCE_THRESHOLD
 
         }
 
 
     # ========================================================
-    # SUCCESS RESPONSE
+    # FLATTEN DETECTIONS
+    # ========================================================
+    #
+    # Kept for compatibility with existing frontend.
+    #
+    # IMPORTANT:
+    # Every flattened detection contains the filename
+    # and actual image dimensions.
+    #
+    # The frontend should preferably use:
+    #
+    # images[].detections
+    #
+    # when displaying markers.
+
+    all_detections = []
+
+
+    for analyzed_image in analyzed_images:
+
+        for detection in analyzed_image["detections"]:
+
+            all_detections.append({
+
+                "image":
+                    analyzed_image["filename"],
+
+                "original_name":
+                    analyzed_image["original_name"],
+
+                "image_width":
+                    analyzed_image["image_width"],
+
+                "image_height":
+                    analyzed_image["image_height"],
+
+                **detection
+
+            })
+
+
+    # ========================================================
+    # TOTAL DAMAGE
+    # ========================================================
+
+    total_damage_count = len(
+        all_detections
+    )
+
+
+    # ========================================================
+    # FINAL RESPONSE
     # ========================================================
 
     return {
@@ -657,16 +1095,34 @@ async def upload_vehicle_images(
             True,
 
         "message":
-            f"{len(saved_images)} image(s) uploaded successfully.",
+            (
+                f"{len(analyzed_images)} "
+                "image(s) analyzed successfully."
+            ),
 
         "image_count":
-            len(saved_images),
+            len(analyzed_images),
+
+        "damage_detected":
+            total_damage_count > 0,
+
+        "damage_count":
+            total_damage_count,
 
         "images":
-            saved_images,
+            analyzed_images,
+
+        "detections":
+            all_detections,
 
         "rejected_images":
-            rejected_images
+            rejected_images,
+
+        "confidence_threshold":
+            DAMAGE_CONFIDENCE_THRESHOLD,
+
+        "confidence_threshold_percent":
+            DAMAGE_CONFIDENCE_THRESHOLD * 100
 
     }
 
@@ -706,45 +1162,29 @@ class VehicleData(BaseModel):
 
 @app.post("/predict")
 def predict_price(
-
     vehicle: VehicleData
-
 ):
 
     # ========================================================
-    # NORMALIZE COMMON INPUTS
+    # NORMALIZE INPUTS
     # ========================================================
 
     vehicle_type = (
-
         vehicle.vehicle_type
-
         .lower()
-
         .strip()
-
     )
-
 
     brand = (
-
         vehicle.brand
-
         .lower()
-
         .strip()
-
     )
 
-
     model_name = (
-
         vehicle.model_name
-
         .lower()
-
         .strip()
-
     )
 
 
@@ -753,31 +1193,16 @@ def predict_price(
     # ========================================================
 
     if (
-
         vehicle_type == "bike"
-
         and brand == "honda"
-
         and "activa" in model_name
-
     ):
 
-        # ----------------------------------------------------
-        # Calculate vehicle age
-        # ----------------------------------------------------
-
         vehicle_age = max(
-
             0,
-
             2026 - vehicle.year
-
         )
 
-
-        # ----------------------------------------------------
-        # Owner mapping
-        # ----------------------------------------------------
 
         owner_mapping = {
 
@@ -797,17 +1222,10 @@ def predict_price(
 
 
         owner_value = owner_mapping.get(
-
             vehicle.owner,
-
             "1st owner"
-
         )
 
-
-        # ----------------------------------------------------
-        # Create input dataframe
-        # ----------------------------------------------------
 
         input_data = pd.DataFrame([{
 
@@ -826,30 +1244,19 @@ def predict_price(
         }])
 
 
-        # ----------------------------------------------------
-        # Encode categorical variables
-        # ----------------------------------------------------
-
         input_encoded = pd.get_dummies(
 
             input_data,
 
             columns=[
-
                 "bike_name",
-
                 "owner"
-
             ],
 
             drop_first=True
 
         )
 
-
-        # ----------------------------------------------------
-        # Match training columns
-        # ----------------------------------------------------
 
         input_encoded = input_encoded.reindex(
 
@@ -861,50 +1268,27 @@ def predict_price(
         )
 
 
-        # ----------------------------------------------------
-        # Verify feature count
-        # ----------------------------------------------------
-
         assert (
-
             input_encoded.shape[1]
-
             == activa_model.n_features_in_
-
         )
 
-
-        # ----------------------------------------------------
-        # Prediction
-        # ----------------------------------------------------
 
         prediction = activa_model.predict(
-
             input_encoded
-
         )
 
-
-        # ----------------------------------------------------
-        # Price
-        # ----------------------------------------------------
 
         estimated_price = max(
 
             0,
 
             float(
-
                 prediction[0]
-
             )
 
         )
 
-
-        # ----------------------------------------------------
-        # Response
-        # ----------------------------------------------------
 
         return {
 
@@ -916,11 +1300,8 @@ def predict_price(
 
             "estimated_price":
                 round(
-
                     estimated_price,
-
                     2
-
                 )
 
         }
@@ -932,22 +1313,11 @@ def predict_price(
 
     if vehicle_type == "bike":
 
-        # ----------------------------------------------------
-        # Calculate vehicle age
-        # ----------------------------------------------------
-
         vehicle_age = max(
-
             0,
-
             2026 - vehicle.year
-
         )
 
-
-        # ----------------------------------------------------
-        # Create input dataframe
-        # ----------------------------------------------------
 
         input_data = pd.DataFrame([{
 
@@ -975,10 +1345,6 @@ def predict_price(
         }])
 
 
-        # ----------------------------------------------------
-        # Encode categorical variables
-        # ----------------------------------------------------
-
         input_encoded = pd.get_dummies(
 
             input_data,
@@ -986,11 +1352,8 @@ def predict_price(
             columns=[
 
                 "bike_name",
-
                 "city",
-
                 "owner",
-
                 "brand"
 
             ],
@@ -999,10 +1362,6 @@ def predict_price(
 
         )
 
-
-        # ----------------------------------------------------
-        # Match training columns
-        # ----------------------------------------------------
 
         input_encoded = input_encoded.reindex(
 
@@ -1014,50 +1373,27 @@ def predict_price(
         )
 
 
-        # ----------------------------------------------------
-        # Verify feature count
-        # ----------------------------------------------------
-
         assert (
-
             input_encoded.shape[1]
-
             == bike_model.n_features_in_
-
         )
 
-
-        # ----------------------------------------------------
-        # Prediction
-        # ----------------------------------------------------
 
         prediction = bike_model.predict(
-
             input_encoded
-
         )
 
-
-        # ----------------------------------------------------
-        # Price
-        # ----------------------------------------------------
 
         estimated_price = max(
 
             0,
 
             float(
-
                 prediction[0]
-
             )
 
         )
 
-
-        # ----------------------------------------------------
-        # Response
-        # ----------------------------------------------------
 
         return {
 
@@ -1069,11 +1405,8 @@ def predict_price(
 
             "estimated_price":
                 round(
-
                     estimated_price,
-
                     2
-
                 )
 
         }
@@ -1083,33 +1416,16 @@ def predict_price(
     # CAR - CATBOOST
     # ========================================================
 
-    # --------------------------------------------------------
-    # Calculate vehicle age
-    # --------------------------------------------------------
-
     vehicle_age = max(
-
         0,
-
         2026 - vehicle.year
-
     )
 
-
-    # ========================================================
-    # CREATE BRAND + MODEL
-    # ========================================================
 
     brand_model = (
-
         f"{brand}_{model_name}"
-
     )
 
-
-    # ========================================================
-    # CREATE CATBOOST INPUT
-    # ========================================================
 
     car_input = pd.DataFrame([{
 
@@ -1133,16 +1449,12 @@ def predict_price(
 
         "fuel_type":
             vehicle.fuel_type
-
             .lower()
-
             .strip(),
 
         "transmission":
             vehicle.transmission
-
             .lower()
-
             .strip(),
 
         "owner":
@@ -1150,16 +1462,12 @@ def predict_price(
 
         "city":
             vehicle.city
-
             .lower()
-
             .strip(),
 
         "body_type":
             vehicle.body_type
-
             .lower()
-
             .strip(),
 
         "vehicle_age":
@@ -1175,40 +1483,23 @@ def predict_price(
     car_features = [
 
         "vehicle_type",
-
         "brand",
-
         "model",
-
         "brand_model",
-
         "year",
-
         "kms_driven",
-
         "fuel_type",
-
         "transmission",
-
         "owner",
-
         "city",
-
         "body_type",
-
         "vehicle_age"
 
     ]
 
 
-    # --------------------------------------------------------
-    # Apply exact feature order
-    # --------------------------------------------------------
-
     car_input = car_input[
-
         car_features
-
     ]
 
 
@@ -1219,38 +1510,23 @@ def predict_price(
     categorical_features = [
 
         "vehicle_type",
-
         "brand",
-
         "model",
-
         "brand_model",
-
         "fuel_type",
-
         "transmission",
-
         "owner",
-
         "city",
-
         "body_type"
 
     ]
 
 
-    # --------------------------------------------------------
-    # Convert categorical values to strings
-    # --------------------------------------------------------
-
     for feature in categorical_features:
 
         car_input[feature] = (
-
             car_input[feature]
-
             .astype(str)
-
         )
 
 
@@ -1259,24 +1535,16 @@ def predict_price(
     # ========================================================
 
     prediction = car_model.predict(
-
         car_input
-
     )
 
-
-    # ========================================================
-    # PRICE
-    # ========================================================
 
     estimated_price = max(
 
         0,
 
         float(
-
             prediction[0]
-
         )
 
     )
@@ -1296,11 +1564,8 @@ def predict_price(
 
         "estimated_price":
             round(
-
                 estimated_price,
-
                 2
-
             )
 
     }
